@@ -1,0 +1,195 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+if (file_exists(__DIR__ . '/../vendor/autoload.php')) {
+    require_once __DIR__ . '/../vendor/autoload.php';
+} else {
+    require_once __DIR__ . '/../src/autoload.php';
+}
+
+use EidCloud\Memory\MemoryManager;
+use EidCloud\Memory\Models\MemoryTier;
+use EidCloud\Memory\Storage\SqliteStorage;
+
+function printUsage(): void
+{
+    echo <<<HELP
+eidcloud-memory CLI v1.0.0
+Multi-tiered AI agent memory engine with importance scoring, working memory, and episodic retrieval in pure PHP.
+
+USAGE:
+  php bin/eidcloud-memory <command> [arguments] [options]
+
+COMMANDS:
+  store <content>       Store a memory fact or observation
+                        Options:
+                          --tier=<name>        Memory tier: short_term, working, long_term, episodic (default: short_term)
+                          --importance=<1-10>  Importance score (default: 5.0)
+                          --tags=<csv>         Comma-separated tags (e.g. "user,pref")
+                          --db=<path>          SQLite DB file path (default: .eidcloud-memory.db)
+
+  query <question>      Query and retrieve ranked memories by relevance and decay
+                        Options:
+                          --top=<N>            Number of items to return (default: 5)
+                          --tier=<name>        Filter by tier
+                          --min-score=<float>  Minimum composite score threshold (default: 0.05)
+                          --db=<path>          SQLite DB file path (default: .eidcloud-memory.db)
+                          --json               Output results in JSON format
+
+  stats                 Show memory store statistics
+                        Options:
+                          --json               Output statistics as JSON
+                          --db=<path>          SQLite DB file path (default: .eidcloud-memory.db)
+
+  prune                 Prune decaying memories and summarize candidates
+                        Options:
+                          --tier=<name>        Target specific tier
+                          --db=<path>          SQLite DB file path (default: .eidcloud-memory.db)
+
+  context <query>       Format a structured context window for LLM prompt injection
+                        Options:
+                          --db=<path>          SQLite DB file path (default: .eidcloud-memory.db)
+
+OPTIONS:
+  -h, --help            Show this help manual
+
+EXAMPLES:
+  php bin/eidcloud-memory store "User prefers concise answers and dark mode" --importance=8 --tags="user,pref"
+  php bin/eidcloud-memory query "What are user preferences?" --top=5
+  php bin/eidcloud-memory stats --json
+  php bin/eidcloud-memory prune
+
+HELP;
+}
+
+// Parse CLI arguments
+$args = array_slice($argv, 1);
+
+if (empty($args) || in_array('-h', $args, true) || in_array('--help', $args, true)) {
+    printUsage();
+    exit(0);
+}
+
+$command = $args[0];
+$posArgs = [];
+$options = [];
+
+for ($i = 1; $i < count($args); $i++) {
+    $arg = $args[$i];
+    if (str_starts_with($arg, '--')) {
+        $clean = substr($arg, 2);
+        if (str_contains($clean, '=')) {
+            [$key, $val] = explode('=', $clean, 2);
+            $options[$key] = $val;
+        } else {
+            $options[$clean] = true;
+        }
+    } else {
+        $posArgs[] = $arg;
+    }
+}
+
+$dbPath = $options['db'] ?? '.eidcloud-memory.db';
+$storage = new SqliteStorage($dbPath);
+$manager = new MemoryManager($storage);
+
+switch ($command) {
+    case 'store':
+        if (empty($posArgs)) {
+            fwrite(STDERR, "Error: Memory content is required.\nUsage: php bin/eidcloud-memory store \"<content>\" [options]\n");
+            exit(1);
+        }
+        $content = $posArgs[0];
+        $tierName = $options['tier'] ?? 'short_term';
+        $tier = MemoryTier::tryFrom($tierName) ?? MemoryTier::SHORT_TERM;
+        $importance = isset($options['importance']) ? (float)$options['importance'] : 5.0;
+        $tags = isset($options['tags']) ? explode(',', $options['tags']) : [];
+
+        $item = $manager->remember(
+            content: $content,
+            tier: $tier,
+            importance: $importance,
+            tags: $tags
+        );
+
+        echo "✓ Stored memory [ID: {$item->id}]\n";
+        echo "  Tier:       {$item->tier->value}\n";
+        echo "  Importance: {$item->importance}/10\n";
+        echo "  Tags:       " . implode(', ', $item->tags) . "\n";
+        echo "  Content:    {$item->content}\n";
+        break;
+
+    case 'query':
+        if (empty($posArgs)) {
+            fwrite(STDERR, "Error: Query text is required.\nUsage: php bin/eidcloud-memory query \"<question>\" [options]\n");
+            exit(1);
+        }
+        $queryText = $posArgs[0];
+        $top = isset($options['top']) ? (int)$options['top'] : 5;
+        $minScore = isset($options['min-score']) ? (float)$options['min-score'] : 0.05;
+        $tierFilter = isset($options['tier']) ? MemoryTier::tryFrom($options['tier']) : null;
+
+        $results = $manager->recall($queryText, topK: $top, tier: $tierFilter, minScore: $minScore);
+
+        if (isset($options['json'])) {
+            echo json_encode(array_map(fn($item) => $item->toArray(), $results), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+            break;
+        }
+
+        echo "Query: \"{$queryText}\"\n";
+        echo "Matches retrieved: " . count($results) . "\n";
+        echo str_repeat('-', 60) . "\n";
+
+        if (empty($results)) {
+            echo "No matching memories found above score threshold.\n";
+            break;
+        }
+
+        foreach ($results as $idx => $item) {
+            $num = $idx + 1;
+            echo "{$num}. [Score: {$item->score}] [{$item->tier->value}] [Importance: {$item->importance}]\n";
+            echo "   Tags: " . implode(', ', $item->tags) . "\n";
+            echo "   {$item->content}\n\n";
+        }
+        break;
+
+    case 'stats':
+        $stats = $manager->getStats();
+        if (isset($options['json'])) {
+            echo json_encode($stats, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+        } else {
+            echo "eidcloud-memory Statistics:\n";
+            echo "  Storage Driver:  {$stats['storage_driver']}\n";
+            echo "  Total Memories:  {$stats['total_memories']}\n";
+            echo "  Avg Importance:  {$stats['avg_importance']}/10\n";
+            echo "  Tier Breakdown:\n";
+            foreach ($stats['tier_breakdown'] as $tier => $cnt) {
+                echo "    - {$tier}: {$cnt}\n";
+            }
+        }
+        break;
+
+    case 'prune':
+        $tierFilter = isset($options['tier']) ? MemoryTier::tryFrom($options['tier']) : null;
+        $report = $manager->pruneAndConsolidate($tierFilter);
+        echo "Memory Maintenance Complete:\n";
+        echo "  Retained:   {$report['retained']}\n";
+        echo "  Summarized: {$report['summarized']}\n";
+        echo "  Forgotten:  {$report['forgotten']}\n";
+        break;
+
+    case 'context':
+        if (empty($posArgs)) {
+            fwrite(STDERR, "Error: Query text is required for context generation.\n");
+            exit(1);
+        }
+        $context = $manager->formatContextWindow($posArgs[0]);
+        echo $context . "\n";
+        break;
+
+    default:
+        fwrite(STDERR, "Unknown command: '{$command}'. Run with --help for usage.\n");
+        exit(1);
+}

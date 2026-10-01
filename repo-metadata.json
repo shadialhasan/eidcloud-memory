@@ -1,0 +1,12 @@
+{
+  "description": "Multi-tiered AI agent memory engine with importance scoring, working memory, and episodic retrieval in pure PHP",
+  "topics": [
+    "eidcloud",
+    "ai-memory",
+    "agent-memory",
+    "working-memory",
+    "episodic-memory",
+    "llm-context",
+    "php8"
+  ]
+}

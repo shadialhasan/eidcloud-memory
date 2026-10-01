@@ -1,0 +1,31 @@
+{
+  "name": "eidcloud/memory",
+  "description": "Multi-tiered AI agent memory engine with importance scoring, working memory, and episodic retrieval in pure PHP",
+  "type": "library",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "Eng. MHD. Shadi AL-Hasan",
+      "email": "mhd.shadi.alhasan@gmail.com",
+      "role": "Author & Maintainer"
+    }
+  ],
+  "require": {
+    "php": ">=8.2"
+  },
+  "autoload": {
+    "psr-4": {
+      "EidCloud\\Memory\\": "src/"
+    }
+  },
+  "bin": [
+    "bin/eidcloud-memory"
+  ],
+  "scripts": {
+    "test": "php tests/run_tests.php"
+  },
+  "config": {
+    "sort-packages": true
+  },
+  "minimum-stability": "stable"
+}
